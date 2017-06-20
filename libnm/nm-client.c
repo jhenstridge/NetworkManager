@@ -2321,7 +2321,6 @@ typedef struct {
 	GCancellable *cancellable;
 	GSimpleAsyncResult *result;
 	int pending_init;
-	guint idle_init_id;
 } NMClientInitData;
 
 static void
@@ -2330,7 +2329,6 @@ init_async_complete (NMClientInitData *init_data)
 	g_simple_async_result_complete (init_data->result);
 	g_object_unref (init_data->result);
 	g_clear_object (&init_data->cancellable);
-	nm_clear_g_source (&init_data->idle_init_id);
 	g_slice_free (NMClientInitData, init_data);
 }
 
@@ -2425,8 +2423,6 @@ got_object_manager (gpointer user_data)
 	GError *error = NULL;
 	GDBusObjectManager *object_manager;
 
-	init_data->idle_init_id = 0;
-
 	if (g_cancellable_set_error_if_cancelled (init_data->cancellable,
 	                                          &error))
 		goto out_take_error;
@@ -2494,7 +2490,7 @@ prepare_object_manager (NMClient *client,
 	                                               user_data, init_async);
 	g_simple_async_result_set_op_res_gboolean (init_data->result, TRUE);
 
-	init_data->idle_init_id = g_idle_add (got_object_manager, init_data);
+	g_idle_add (got_object_manager, init_data);
 }
 
 static void
