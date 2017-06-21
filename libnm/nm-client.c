@@ -105,6 +105,7 @@ typedef struct {
 	GDBusObjectManager *object_manager;
 	NMClientInitData *init_data;
 	struct udev *udev;
+	bool manager_initialized;
 } NMClientPrivate;
 
 enum {
@@ -261,9 +262,13 @@ nm_client_get_startup (NMClient *client)
 gboolean
 nm_client_get_nm_running (NMClient *client)
 {
+	NMClientPrivate *priv;
+
 	g_return_val_if_fail (NM_IS_CLIENT (client), FALSE);
 
-	return NM_CLIENT_GET_PRIVATE (client)->manager != NULL;
+	priv = NM_CLIENT_GET_PRIVATE (client);
+
+	return priv->manager && priv->manager_initialized;
 }
 
 /**
@@ -2343,6 +2348,15 @@ _init_om (NMClient *self,
 
 	g_signal_connect (priv->object_manager, "notify::name-owner",
 	                  G_CALLBACK (name_owner_changed), self);
+
+	if (   !init_data_async
+	    || init_data_async->pending_init == 0) {
+		if (priv->manager) {
+			priv->manager_initialized = TRUE;
+			g_object_notify (G_OBJECT (self), NM_CLIENT_NM_RUNNING);
+		}
+	}
+
 	return TRUE;
 }
 
@@ -2358,6 +2372,7 @@ static void
 init_async_complete (NMClientInitData *init_data)
 {
 	NMClientPrivate *priv;
+	NMClient *client = NULL;
 
 	if (init_data->pending_init > 0)
 		return;
@@ -2367,11 +2382,18 @@ init_async_complete (NMClientInitData *init_data)
 		priv = NM_CLIENT_GET_PRIVATE (init_data->client);
 		nm_assert (priv->init_data == init_data);
 		priv->init_data = NULL;
+		if (priv->manager && !priv->manager_initialized) {
+			priv->manager_initialized = TRUE;
+			client = init_data->client;
+		}
 	}
 	g_simple_async_result_complete (init_data->result);
 	g_object_unref (init_data->result);
 	g_clear_object (&init_data->cancellable);
 	g_slice_free (NMClientInitData, init_data);
+
+	if (client)
+		g_object_notify (G_OBJECT (client), NM_CLIENT_NM_RUNNING);
 }
 
 static void
@@ -2415,6 +2437,7 @@ unhook_om (NMClient *self)
 
 		g_signal_handlers_disconnect_by_data (priv->manager, self);
 		g_clear_object (&priv->manager);
+		priv->manager_initialized = FALSE;
 		g_object_notify (G_OBJECT (self), NM_CLIENT_ACTIVE_CONNECTIONS);
 		g_object_notify (G_OBJECT (self), NM_CLIENT_NM_RUNNING);
 	}
@@ -2441,12 +2464,6 @@ unhook_om (NMClient *self)
 	for (iter = objects; iter; iter = iter->next)
 		g_object_set_qdata (iter->data, _nm_object_obj_nm_quark (), NULL);
 	g_list_free_full (objects, g_object_unref);
-}
-
-static void
-new_object_manager (GObject *source_object, GAsyncResult *res, gpointer user_data)
-{
-	g_object_notify (G_OBJECT (user_data), NM_CLIENT_NM_RUNNING);
 }
 
 static gboolean
@@ -2506,8 +2523,7 @@ name_owner_changed (GObject *object, GParamSpec *pspec, gpointer user_data)
 
 	if (_om_has_name_owner (object_manager)) {
 		g_clear_object (&priv->object_manager);
-		prepare_object_manager (self, NULL,
-		                        new_object_manager, self);
+		prepare_object_manager (self, NULL, NULL, NULL);
 	} else {
 		g_signal_handlers_disconnect_by_func (object_manager, object_added, self);
 		unhook_om (self);
