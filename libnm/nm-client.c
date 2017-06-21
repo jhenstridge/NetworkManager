@@ -103,7 +103,7 @@ typedef struct {
 	NMRemoteSettings *settings;
 	NMDnsManager *dns_manager;
 	GDBusObjectManager *object_manager;
-	GCancellable *new_object_manager_cancellable;
+	NMClientInitData *init_data;
 	struct udev *udev;
 } NMClientPrivate;
 
@@ -2357,8 +2357,17 @@ init_sync (GInitable *initable, GCancellable *cancellable, GError **error)
 static void
 init_async_complete (NMClientInitData *init_data)
 {
+	NMClientPrivate *priv;
+
 	if (init_data->pending_init > 0)
 		return;
+
+	if (init_data->client) {
+		nm_assert (NM_IS_CLIENT (init_data->client));
+		priv = NM_CLIENT_GET_PRIVATE (init_data->client);
+		nm_assert (priv->init_data == init_data);
+		priv->init_data = NULL;
+	}
 	g_simple_async_result_complete (init_data->result);
 	g_object_unref (init_data->result);
 	g_clear_object (&init_data->cancellable);
@@ -2437,10 +2446,6 @@ unhook_om (NMClient *self)
 static void
 new_object_manager (GObject *source_object, GAsyncResult *res, gpointer user_data)
 {
-	NMClient *self = NM_CLIENT (user_data);
-	NMClientPrivate *priv = NM_CLIENT_GET_PRIVATE (self);
-
-	g_clear_object (&priv->new_object_manager_cancellable);
 	g_object_notify (G_OBJECT (user_data), NM_CLIENT_NM_RUNNING);
 }
 
@@ -2469,14 +2474,23 @@ prepare_object_manager (NMClient *client,
                         GAsyncReadyCallback callback,
                         gpointer user_data)
 {
+	NMClientPrivate *priv = NM_CLIENT_GET_PRIVATE (client);
 	NMClientInitData *init_data;
+
+	if (priv->init_data) {
+		init_data = priv->init_data;
+		priv->init_data = NULL;
+		init_data->client = NULL;
+		g_cancellable_cancel (init_data->cancellable);
+	}
 
 	init_data = g_slice_new0 (NMClientInitData);
 	init_data->client = client;
-	init_data->cancellable = cancellable ? g_object_ref (cancellable) : NULL;
+	init_data->cancellable = cancellable ? g_object_ref (cancellable) : g_cancellable_new ();
 	init_data->result = g_simple_async_result_new (G_OBJECT (client), callback,
 	                                               user_data, init_async);
 	g_simple_async_result_set_op_res_gboolean (init_data->result, TRUE);
+	priv->init_data = init_data;
 
 	g_idle_add (got_object_manager, init_data);
 }
@@ -2492,9 +2506,7 @@ name_owner_changed (GObject *object, GParamSpec *pspec, gpointer user_data)
 
 	if (_om_has_name_owner (object_manager)) {
 		g_clear_object (&priv->object_manager);
-		nm_clear_g_cancellable (&priv->new_object_manager_cancellable);
-		priv->new_object_manager_cancellable = g_cancellable_new ();
-		prepare_object_manager (self, priv->new_object_manager_cancellable,
+		prepare_object_manager (self, NULL,
 		                        new_object_manager, self);
 	} else {
 		g_signal_handlers_disconnect_by_func (object_manager, object_added, self);
@@ -2526,7 +2538,9 @@ dispose (GObject *object)
 {
 	NMClientPrivate *priv = NM_CLIENT_GET_PRIVATE (object);
 
-	nm_clear_g_cancellable (&priv->new_object_manager_cancellable);
+	/* during the async operation we take a ref on @self. There
+	 * can be no init-data pending. */
+	nm_assert (!priv->init_data);
 
 	if (priv->manager) {
 		g_signal_handlers_disconnect_by_data (priv->manager, object);
