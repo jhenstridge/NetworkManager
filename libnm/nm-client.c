@@ -2275,6 +2275,29 @@ objects_created (NMClient *client, GDBusObjectManager *object_manager, GError **
 static void name_owner_changed (GObject *object, GParamSpec *pspec, gpointer user_data);
 
 static gboolean
+_init_om (NMClient *self,
+          GCancellable *cancellable,
+          GError **error)
+{
+	NMClientPrivate *priv;
+
+	nm_assert (NM_IS_CLIENT (self));
+
+	priv = NM_CLIENT_GET_PRIVATE (self);
+
+	nm_assert (!priv->object_manager);
+
+	priv->object_manager = g_dbus_object_manager_client_new_for_bus_sync (_nm_dbus_bus_type (),
+	                                                                      G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_DO_NOT_AUTO_START,
+	                                                                      "org.freedesktop.NetworkManager",
+	                                                                      "/org/freedesktop",
+	                                                                      proxy_type, NULL, NULL,
+	                                                                      cancellable,
+	                                                                      error);
+	return priv->object_manager != NULL;
+}
+
+static gboolean
 init_sync (GInitable *initable, GCancellable *cancellable, GError **error)
 {
 	NMClient *client = NM_CLIENT (initable);
@@ -2282,14 +2305,7 @@ init_sync (GInitable *initable, GCancellable *cancellable, GError **error)
 	GList *objects, *iter;
 	gchar *name_owner;
 
-	priv->object_manager = g_dbus_object_manager_client_new_for_bus_sync (_nm_dbus_bus_type (),
-	                                                                      G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_DO_NOT_AUTO_START,
-	                                                                      "org.freedesktop.NetworkManager",
-	                                                                      "/org/freedesktop",
-	                                                                      proxy_type, NULL, NULL,
-	                                                                      cancellable, error);
-
-	if (!priv->object_manager)
+	if (!_init_om (client, cancellable, error))
 		return FALSE;
 
 	name_owner = g_dbus_object_manager_client_get_name_owner (G_DBUS_OBJECT_MANAGER_CLIENT (priv->object_manager));
@@ -2422,25 +2438,17 @@ got_object_manager (gpointer user_data)
 	GList *objects, *iter;
 	gchar *name_owner;
 	GError *error = NULL;
-	GDBusObjectManager *object_manager;
 
 	if (g_cancellable_set_error_if_cancelled (init_data->cancellable,
 	                                          &error))
 		goto out_take_error;
 
-	object_manager = g_dbus_object_manager_client_new_for_bus_sync (_nm_dbus_bus_type (),
-	                                                                G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_DO_NOT_AUTO_START,
-	                                                                "org.freedesktop.NetworkManager",
-	                                                                "/org/freedesktop",
-	                                                                proxy_type, NULL, NULL,
-	                                                                init_data->cancellable,
-	                                                                &error);
-	if (!object_manager)
+	client = init_data->client;
+
+	if (!_init_om (client, init_data->cancellable, &error))
 		goto out_take_error;
 
-	client = init_data->client;
 	priv = NM_CLIENT_GET_PRIVATE (client);
-	priv->object_manager = object_manager;
 
 	name_owner = g_dbus_object_manager_client_get_name_owner (G_DBUS_OBJECT_MANAGER_CLIENT (priv->object_manager));
 	if (name_owner) {
