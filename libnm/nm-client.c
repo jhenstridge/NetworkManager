@@ -2311,15 +2311,15 @@ _init_om (NMClient *self,
 static gboolean
 init_sync (GInitable *initable, GCancellable *cancellable, GError **error)
 {
-	NMClient *client = NM_CLIENT (initable);
-	NMClientPrivate *priv = NM_CLIENT_GET_PRIVATE (client);
+	NMClient *self = NM_CLIENT (initable);
+	NMClientPrivate *priv = NM_CLIENT_GET_PRIVATE (self);
 	GList *objects, *iter;
 
-	if (!_init_om (client, cancellable, error))
+	if (!_init_om (self, cancellable, error))
 		return FALSE;
 
 	if (_om_has_name_owner (priv->object_manager)) {
-		if (!objects_created (client, priv->object_manager, error))
+		if (!objects_created (self, priv->object_manager, error))
 			return FALSE;
 
 		objects = g_dbus_object_manager_get_objects (priv->object_manager);
@@ -2340,7 +2340,7 @@ init_sync (GInitable *initable, GCancellable *cancellable, GError **error)
 	}
 
 	g_signal_connect (priv->object_manager, "notify::name-owner",
-	                  G_CALLBACK (name_owner_changed), client);
+	                  G_CALLBACK (name_owner_changed), self);
 
 	return TRUE;
 }
