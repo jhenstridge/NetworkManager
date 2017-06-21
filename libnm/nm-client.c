@@ -168,6 +168,11 @@ NM_CACHED_QUARK_FCN ("nm-client-error-quark", nm_client_error_quark)
 
 /*****************************************************************************/
 
+static void name_owner_changed (GObject *object, GParamSpec *pspec, gpointer user_data);
+static void async_inited_obj_nm (GObject *object, GAsyncResult *result, gpointer user_data);
+
+/*****************************************************************************/
+
 static void
 nm_client_init (NMClient *client)
 {
@@ -2272,8 +2277,6 @@ objects_created (NMClient *client, GDBusObjectManager *object_manager, GError **
 
 /* Synchronous initialization. */
 
-static void name_owner_changed (GObject *object, GParamSpec *pspec, gpointer user_data);
-
 static gboolean
 _om_has_name_owner (GDBusObjectManager *object_manager)
 {
@@ -2288,9 +2291,11 @@ _om_has_name_owner (GDBusObjectManager *object_manager)
 static gboolean
 _init_om (NMClient *self,
           GCancellable *cancellable,
+          NMClientInitData *init_data_async,
           GError **error)
 {
 	NMClientPrivate *priv;
+	GList *objects, *iter;
 
 	nm_assert (NM_IS_CLIENT (self));
 
@@ -2305,17 +2310,7 @@ _init_om (NMClient *self,
 	                                                                      proxy_type, NULL, NULL,
 	                                                                      cancellable,
 	                                                                      error);
-	return priv->object_manager != NULL;
-}
-
-static gboolean
-init_sync (GInitable *initable, GCancellable *cancellable, GError **error)
-{
-	NMClient *self = NM_CLIENT (initable);
-	NMClientPrivate *priv = NM_CLIENT_GET_PRIVATE (self);
-	GList *objects, *iter;
-
-	if (!_init_om (self, cancellable, error))
+	if (!priv->object_manager)
 		return FALSE;
 
 	if (_om_has_name_owner (priv->object_manager)) {
@@ -2330,10 +2325,17 @@ init_sync (GInitable *initable, GCancellable *cancellable, GError **error)
 			if (!obj_nm)
 				continue;
 
-			if (!g_initable_init (G_INITABLE (obj_nm), cancellable, NULL)) {
-				/* This is a can-not-happen situation, the NMObject subclasses are not
-				 * supposed to fail initialization. */
-				g_warn_if_reached ();
+			if (init_data_async) {
+				init_data_async->pending_init++;
+				g_async_initable_init_async (G_ASYNC_INITABLE (obj_nm),
+				                             G_PRIORITY_DEFAULT, cancellable,
+				                             async_inited_obj_nm, init_data_async);
+			} else {
+				if (!g_initable_init (G_INITABLE (obj_nm), cancellable, NULL)) {
+					/* This is a can-not-happen situation, the NMObject subclasses are not
+					 * supposed to fail initialization. */
+					g_warn_if_reached ();
+				}
 			}
 		}
 		g_list_free_full (objects, g_object_unref);
@@ -2341,8 +2343,13 @@ init_sync (GInitable *initable, GCancellable *cancellable, GError **error)
 
 	g_signal_connect (priv->object_manager, "notify::name-owner",
 	                  G_CALLBACK (name_owner_changed), self);
-
 	return TRUE;
+}
+
+static gboolean
+init_sync (GInitable *initable, GCancellable *cancellable, GError **error)
+{
+	return _init_om (NM_CLIENT (initable), cancellable, NULL, error);
 }
 
 /* Asynchronous initialization. */
@@ -2442,49 +2449,16 @@ got_object_manager (gpointer user_data)
 {
 	NMClientInitData *init_data = user_data;
 	NMClient *client;
-	NMClientPrivate *priv;
-	GList *objects, *iter;
 	GError *error = NULL;
-
-	if (g_cancellable_set_error_if_cancelled (init_data->cancellable,
-	                                          &error))
-		goto out_take_error;
 
 	client = init_data->client;
 
-	if (!_init_om (client, init_data->cancellable, &error))
-		goto out_take_error;
+	if (g_cancellable_set_error_if_cancelled (init_data->cancellable,
+	                                          &error))
+		g_simple_async_result_take_error (init_data->result, error);
+	else if (!_init_om (client, init_data->cancellable, init_data, &error))
+		g_simple_async_result_take_error (init_data->result, error);
 
-	priv = NM_CLIENT_GET_PRIVATE (client);
-
-	if (_om_has_name_owner (priv->object_manager)) {
-		if (!objects_created (client, priv->object_manager, &error))
-			goto out_take_error;
-
-		objects = g_dbus_object_manager_get_objects (priv->object_manager);
-		for (iter = objects; iter; iter = iter->next) {
-			NMObject *obj_nm;
-
-			obj_nm = g_object_get_qdata (iter->data, _nm_object_obj_nm_quark ());
-			if (!obj_nm)
-				continue;
-
-			init_data->pending_init++;
-			g_async_initable_init_async (G_ASYNC_INITABLE (obj_nm),
-			                             G_PRIORITY_DEFAULT, init_data->cancellable,
-			                             async_inited_obj_nm, init_data);
-		}
-		g_list_free_full (objects, g_object_unref);
-	}
-
-	init_async_complete (init_data);
-
-	g_signal_connect (priv->object_manager, "notify::name-owner",
-	                  G_CALLBACK (name_owner_changed), client);
-	return G_SOURCE_REMOVE;
-
-out_take_error:
-	g_simple_async_result_take_error (init_data->result, error);
 	init_async_complete (init_data);
 	return G_SOURCE_REMOVE;
 }
