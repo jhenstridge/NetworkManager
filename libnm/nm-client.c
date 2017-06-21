@@ -2461,8 +2461,9 @@ got_object_manager (gpointer user_data)
 			                             async_inited_obj_nm, init_data);
 		}
 		g_list_free_full (objects, g_object_unref);
+	}
 
-	} else
+	if (init_data->pending_init == 0)
 		init_async_complete (init_data);
 
 	g_signal_connect (priv->object_manager, "notify::name-owner",
