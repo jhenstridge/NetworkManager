@@ -2275,6 +2275,17 @@ objects_created (NMClient *client, GDBusObjectManager *object_manager, GError **
 static void name_owner_changed (GObject *object, GParamSpec *pspec, gpointer user_data);
 
 static gboolean
+_om_has_name_owner (GDBusObjectManager *object_manager)
+{
+	gs_free char *name_owner = NULL;
+
+	nm_assert (G_IS_DBUS_OBJECT_MANAGER_CLIENT (object_manager));
+
+	name_owner = g_dbus_object_manager_client_get_name_owner (G_DBUS_OBJECT_MANAGER_CLIENT (object_manager));
+	return !!name_owner;
+}
+
+static gboolean
 _init_om (NMClient *self,
           GCancellable *cancellable,
           GError **error)
@@ -2303,14 +2314,11 @@ init_sync (GInitable *initable, GCancellable *cancellable, GError **error)
 	NMClient *client = NM_CLIENT (initable);
 	NMClientPrivate *priv = NM_CLIENT_GET_PRIVATE (client);
 	GList *objects, *iter;
-	gchar *name_owner;
 
 	if (!_init_om (client, cancellable, error))
 		return FALSE;
 
-	name_owner = g_dbus_object_manager_client_get_name_owner (G_DBUS_OBJECT_MANAGER_CLIENT (priv->object_manager));
-	if (name_owner) {
-		g_free (name_owner);
+	if (_om_has_name_owner (priv->object_manager)) {
 		if (!objects_created (client, priv->object_manager, error))
 			return FALSE;
 
@@ -2436,7 +2444,6 @@ got_object_manager (gpointer user_data)
 	NMClient *client;
 	NMClientPrivate *priv;
 	GList *objects, *iter;
-	gchar *name_owner;
 	GError *error = NULL;
 
 	if (g_cancellable_set_error_if_cancelled (init_data->cancellable,
@@ -2450,9 +2457,7 @@ got_object_manager (gpointer user_data)
 
 	priv = NM_CLIENT_GET_PRIVATE (client);
 
-	name_owner = g_dbus_object_manager_client_get_name_owner (G_DBUS_OBJECT_MANAGER_CLIENT (priv->object_manager));
-	if (name_owner) {
-		g_free (name_owner);
+	if (_om_has_name_owner (priv->object_manager)) {
 		if (!objects_created (client, priv->object_manager, &error))
 			goto out_take_error;
 
@@ -2508,13 +2513,10 @@ name_owner_changed (GObject *object, GParamSpec *pspec, gpointer user_data)
 	NMClient *self = user_data;
 	NMClientPrivate *priv = NM_CLIENT_GET_PRIVATE (self);
 	GDBusObjectManager *object_manager = G_DBUS_OBJECT_MANAGER (object);
-	gchar *name_owner;
 
 	nm_assert (object_manager == priv->object_manager);
 
-	name_owner = g_dbus_object_manager_client_get_name_owner (G_DBUS_OBJECT_MANAGER_CLIENT (object));
-	if (name_owner) {
-		g_free (name_owner);
+	if (_om_has_name_owner (object_manager)) {
 		g_clear_object (&priv->object_manager);
 		nm_clear_g_cancellable (&priv->new_object_manager_cancellable);
 		priv->new_object_manager_cancellable = g_cancellable_new ();
